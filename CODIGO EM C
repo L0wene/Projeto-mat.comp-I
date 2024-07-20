@@ -1,0 +1,158 @@
+import serial
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+
+# Configuração da porta serial do Arduino
+arduino = serial.Serial(port='/dev/ttyACM0', baudrate=19200)
+
+# Configuração inicial do gráfico
+plt.ion()  # Ativa o modo interativo para atualização contínua do gráfico
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+
+# Gráfico 1: Com pontos menores
+line1, = ax1.plot([], [], linestyle='-', color='b', marker='o', markersize=2)
+ax1.set_xlabel('Amostras')
+ax1.set_ylabel('Intensidade Luminosa')
+ax1.set_title('Leitura de Dados do Fototransistor (Com Pontos Menores)')
+ax1.grid(True)
+
+# Gráfico 2: Linha suave
+line2, = ax2.plot([], [], linestyle='-', color='r')
+ax2.set_xlabel('Amostras')
+ax2.set_ylabel('Intensidade Luminosa')
+ax2.set_title('Leitura de Dados do Fototransistor (Linha Suave)')
+ax2.grid(True)
+
+plt.tight_layout()
+
+paused = False
+
+def on_key(event):
+    global paused, x_data, y_data
+    if event.key == 'p':
+        paused = not paused
+    elif event.key == 'r':
+        x_data = []
+        y_data = []
+        line1.set_data([], [])
+        line2.set_data([], [])
+        ax1.relim()
+        ax1.autoscale_view(True, 'both', True)
+        ax2.relim()
+        ax2.autoscale_view(True, 'both', True)
+        fig.canvas.draw_idle()
+
+fig.canvas.mpl_connect('key_press_event', on_key)
+
+# Listas para armazenar os dados
+x_data = []
+y_data = []
+
+# Controle da taxa de atualização do gráfico
+update_interval = 0.1  # Intervalo de atualização em segundos
+last_update = time.time()
+
+# Função para anotar os pontos no gráfico 1
+annot = ax1.annotate("", xy=(0, 0), xytext=(20, 20),
+                     textcoords="offset points",
+                     bbox=dict(boxstyle="round", fc="w"),
+                     arrowprops=dict(arrowstyle="->"))
+annot.set_visible(False)
+
+def update_annot(ind):
+    x, y = line1.get_data()
+    annot.xy = (x[ind["ind"][0]], y[ind["ind"][0]])
+    text = f"{x[ind['ind'][0]]}, {y[ind['ind'][0]]:.2f}"
+    annot.set_text(text)
+    annot.get_bbox_patch().set_alpha(0.4)
+
+def hover(event):
+    vis = annot.get_visible()
+    if event.inaxes == ax1:
+        cont, ind = line1.contains(event)
+        if cont:
+            update_annot(ind)
+            annot.set_visible(True)
+            fig.canvas.draw_idle()
+        else:
+            if vis:
+                annot.set_visible(False)
+                fig.canvas.draw_idle()
+
+fig.canvas.mpl_connect("motion_notify_event", hover)
+
+# Função de zoom
+def zoom(event):
+    if event.inaxes == ax1:
+        if event.button == 'up':
+            scale_factor = 1 / 1.2
+        elif event.button == 'down':
+            scale_factor = 1.2
+        else:
+            return
+
+        cur_xlim = ax1.get_xlim()
+        cur_ylim = ax1.get_ylim()
+
+        xdata = event.xdata
+        ydata = event.ydata
+
+        new_width = (cur_xlim[1] - cur_xlim[0]) * scale_factor
+        new_height = (cur_ylim[1] - cur_ylim[0]) * scale_factor
+
+        relx = (cur_xlim[1] - xdata) / (cur_xlim[1] - cur_xlim[0])
+        rely = (cur_ylim[1] - ydata) / (cur_ylim[1] - cur_ylim[0])
+
+        ax1.set_xlim([xdata - new_width * (1 - relx), xdata + new_width * (relx)])
+        ax1.set_ylim([ydata - new_height * (1 - rely), ydata + new_height * (rely)])
+        fig.canvas.draw_idle()
+
+fig.canvas.mpl_connect('scroll_event', zoom)
+
+try:
+    while True:
+        if not paused:
+            while arduino.inWaiting() > 0:
+                data = arduino.readline().decode().strip()
+                print(data)  # Para verificar se os dados estão sendo lidos corretamente
+
+                # Exemplo de leitura de dados e plotagem simples
+                try:
+                    value = float(data)  # Converter para float se os dados são numéricos
+                    x_data.append(len(x_data) + 1)  # Eixo X com contagem simples
+                    y_data.append(value)  # Adicionar valor ao eixo Y
+
+                    # Verifica se é hora de atualizar o gráfico
+                    if time.time() - last_update > update_interval:
+                        # Interpolação dos dados para uma linha suave
+                        if len(x_data) > 1:
+                            x_smooth = np.linspace(min(x_data), max(x_data), 500)
+                            y_smooth = np.interp(x_smooth, x_data, y_data)
+
+                            # Atualiza os dados no gráfico 1 (com pontos menores)
+                            line1.set_data(x_data, y_data)
+                            ax1.relim()  # Reajusta os limites dos eixos
+                            ax1.autoscale_view(True, 'both', True)  # Autoescala dos eixos
+
+                            # Atualiza os dados no gráfico 2 (linha suave)
+                            line2.set_data(x_smooth, y_smooth)
+                            ax2.relim()  # Reajusta os limites dos eixos
+                            ax2.autoscale_view(True, 'both', True)  # Autoescala dos eixos
+
+                            fig.canvas.flush_events()  # Atualiza a figura
+                            last_update = time.time()  # Atualiza o tempo da última atualização
+
+                except ValueError:
+                    print("Erro ao converter dado para float:", data)
+
+        plt.pause(0.01)  # Breve pausa para permitir a atualização do gráfico
+
+except KeyboardInterrupt:
+    print("Programa interrompido pelo usuário.")
+
+finally:
+    arduino.close()  # Fechar a conexão serial ao encerrar
+
+plt.ioff()  # Desativa o modo interativo ao finalizar
+plt.show()  # Mostrar o gráfico final ao encerrar
